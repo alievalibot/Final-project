@@ -1,153 +1,103 @@
 #include <stdio.h>
 #include <stdlib.h>
-#include <stdbool.h>
 #include <string.h>
+#include <limits.h>
 #include "scanner.h"
 
-void read_file(char *filename, char **buffer) {
+Token tokens[10000];
+static char *input;
+static const char *current;
+static int line;
+
+void init_scanner(const char *file_name) {
+  FILE *file = fopen(file_name, "rb");
   long length;
-  FILE *f = fopen(filename, "rb");
-  if (f == NULL) {
-    exit(1);
+  if (!file) { perror(file_name); exit(EXIT_FAILURE); }
+  if (fseek(file, 0, SEEK_END) || (length = ftell(file)) < 0 ||
+      fseek(file, 0, SEEK_SET)) {
+    fprintf(stderr, "Cannot read %s\n", file_name);
+    fclose(file);
+    exit(EXIT_FAILURE);
   }
-  fseek(f, 0, SEEK_END);
-  length = ftell(f);
-  fseek(f, 0, SEEK_SET);
-  *buffer = malloc(length);
-  if (buffer == NULL) {
-    exit(2);
+  free(input);
+  input = malloc((size_t)length + 1);
+  if (!input) { fclose(file); exit(EXIT_FAILURE); }
+  if (fread(input, 1, (size_t)length, file) != (size_t)length) {
+    fprintf(stderr, "Cannot read %s\n", file_name);
+    fclose(file);
+    exit(EXIT_FAILURE);
   }
-  fread(*buffer, 1, length, f);
-  fclose(f);
+  fclose(file);
+  input[length] = '\0';
+  current = input;
+  line = 1;
 }
 
-struct Scanner {
-  char *start;
-  char *current;
-  int line;
-} scanner;
-
-void init_scanner(char *file_name) {
-  char *file_content;
-  read_file(file_name, &file_content);
-  scanner.start = file_content;
-  scanner.current = file_content;
-  scanner.line = 1;
-}
-
-char peek_char() {
-  return *scanner.current;
-}
-
-char consume_char() {
-  char c = *scanner.current;
-  scanner.current += 1;
-  return c;
-}
-
-int get_scanner_length() {
-  return (int)(scanner.current - scanner.start);
-}
-
-Token create_token(TokenType type, int value) {
-  Token token;
-  token.type = type;
-  token.value = value;
-  token.source = scanner.start;
-  token.line = scanner.line;
-  token.length = get_scanner_length();
-  return token;
-}
-
-void consume_whitespace() {
-  while (true) {
-    char c = peek_char();
-    if (c != ' ' && c != '\t' && c != '\n' && c != '\r')
-      return;
-    if (c == '\n')
-      scanner.line += 1;
-    consume_char();
-  }
-}
-
-bool is_digit(char c) {
-  return c >= '0' && c <= '9';
-}
-
-bool is_alpha(char c) {
+static int digit(char c) { return c >= '0' && c <= '9'; }
+static int alpha(char c) {
   return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
 }
 
-bool is_alpha_numeric(char c) {
-  return is_alpha(c) || is_digit(c);
-}
-
-Token create_int(char c) {
-  int result = c - '0';
-  while (is_digit(peek_char())) {
-    c = consume_char();
-    result = (result * 10) + (c - '0'); // append the digit c to result
+static Token scan_token(void) {
+  Token token;
+  for (;;) {
+    if (*current == ';') {
+      while (*current && *current != '\r' && *current != '\n') current++;
+    } else if (*current == '\r' || *current == '\n') {
+      char newline = *current++;
+      if (newline == '\r' && *current == '\n') current++;
+      line++;
+    } else if (*current == ' ' || *current == '\t') current++;
+    else break;
   }
-  return create_token(TOKEN_INTEGER, result);
+  token.source = current;
+  token.line = line;
+  token.value = 0;
+  token.type = TOKEN_ERROR;
+  if (!*current) token.type = TOKEN_EOF;
+  else if (*current == ',') { current++; token.type = TOKEN_COMMA; }
+  else if (digit(*current)) {
+    int overflow = 0;
+    token.type = TOKEN_INTEGER;
+    while (digit(*current)) {
+      int n = *current++ - '0';
+      if (token.value > (INT_MAX - n) / 10) overflow = 1;
+      else if (!overflow) token.value = token.value * 10 + n;
+    }
+    if (overflow) token.type = TOKEN_ERROR;
+  } else if (alpha(*current)) {
+    static const struct { const char *name; TokenType type; } keywords[] = {
+      {"mov", TOKEN_MOV}, {"or", TOKEN_OR}, {"add", TOKEN_ADD},
+      {"sub", TOKEN_SUB}, {"nand", TOKEN_NAND}, {"and", TOKEN_AND},
+      {"xor", TOKEN_XOR}, {"eq", TOKEN_EQ}
+    };
+    size_t i, length;
+    while (alpha(*current) || digit(*current)) current++;
+    length = (size_t)(current - token.source);
+    if (length == 4 && !memcmp(token.source, "reg", 3) &&
+        token.source[3] >= '1' && token.source[3] <= '6') {
+      token.type = TOKEN_REGISTER;
+      token.value = token.source[3] - '0';
+    } else {
+      for (i = 0; i < sizeof(keywords) / sizeof(keywords[0]); i++) {
+        if (strlen(keywords[i].name) == length &&
+            !memcmp(token.source, keywords[i].name, length)) {
+          token.type = keywords[i].type;
+          break;
+        }
+      }
+    }
+  } else current++;
+  token.length = (int)(current - token.source);
+  return token;
 }
 
-bool is_token_equal_to(char* s) {
-  int scan_len = get_scanner_length();
-  if (scan_len != strlen(s))
-    return false;
-  for (int i=0; i<scan_len; i++)
-    if (s[i] != scanner.start[i])
-      return false;
-  return true;
-}
-
-Token create_identifier() {
-  while (is_alpha_numeric(peek_char())) {
-    consume_char();
-  }
-
-  if (is_token_equal_to("mov"))
-    return create_token(TOKEN_MOV, 0);
-  if (is_token_equal_to("reg1"))
-    return create_token(TOKEN_REGISTER, 1);
-  if (is_token_equal_to("reg2"))
-    return create_token(TOKEN_REGISTER, 2);
-  if (is_token_equal_to("reg3"))
-    return create_token(TOKEN_REGISTER, 3);
-  if (is_token_equal_to("reg4"))
-    return create_token(TOKEN_REGISTER, 4);
-  if (is_token_equal_to("reg5"))
-    return create_token(TOKEN_REGISTER, 5);
-  if (is_token_equal_to("reg6"))
-    return create_token(TOKEN_REGISTER, 6);
-
-  printf("Compile error on line %d: unknown identifier.\n", scanner.line);
-  exit(1);
-}
-
-Token scan_token() {
-  consume_whitespace();
-
-  scanner.start = scanner.current;
-  char c = consume_char();
-
-  if (c == ',')
-    return create_token(TOKEN_COMMA, 0);
-  if (is_digit(c))
-    return create_int(c);
-  if (is_alpha(c))
-    return create_identifier();
-  if (c == '\0')
-    return create_token(TOKEN_EOF, 0);
-
-  printf("Compile error on line %d: Unexpected character '%c'.\n", scanner.line, c);
-  exit(1);
-}
-
-void scan_tokens() {
-  for (int i=0; true; i++) {
+void scan_tokens(void) {
+  size_t i;
+  for (i = 0; i < sizeof(tokens) / sizeof(tokens[0]); i++) {
     tokens[i] = scan_token();
-    if (tokens[i].type == TOKEN_EOF)
-      return;
+    if (tokens[i].type == TOKEN_EOF) return;
   }
+  fprintf(stderr, "Error: source exceeds token capacity.\n");
+  exit(EXIT_FAILURE);
 }

@@ -37,3 +37,20 @@ mov [reg2], reg1 ; Move register 1 into RAM at address register 2
     ; 11 000001
 
 ```
+
+## Building and running
+
+```sh
+gcc -std=c11 -Wall -Wextra -Werror main.c scanner.c parser.c -o main
+./main example.asm
+python test_assembler.py
+```
+
+Without a file argument, the assembler reads `example.asm` from the current
+working directory. Semicolons introduce comments. Each instruction occupies one
+line. Registers are `reg1` through `reg6`; arithmetic and logic instructions use
+`OP destination, reg1, reg2`, with `eq` for equality.
+
+Errors are reported to standard error with line numbers. Parsing resumes on the
+next line, and any error causes a nonzero exit status and suppresses all binary
+output. Programs may contain at most 255 instructions.

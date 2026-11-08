@@ -1,111 +1,83 @@
 #include <stdio.h>
-#include <stdlib.h>
 #include "scanner.h"
 #include "parser.h"
 
-struct Parser {
-  Token *current;
-  int next_byte;
-} parser;
+static u8 final_binary[255];
+static int byte_count;
+static int error_count;
 
-Token peek() {
-  return *parser.current;
+static int report(int line, const char *message) {
+  fprintf(stderr, "Error on line %d: %s\n", line, message);
+  error_count++;
+  return 0;
 }
 
-Token consume() {
-  Token t = *parser.current;
-  if (t.type == TOKEN_EOF) {
-    printf("Error on line %d: Unexpected end of file\n", t.line);
-    exit(1);
+static int compile_line(const Token *t, int count) {
+  int opcode = -1;
+  int value;
+  int i;
+  for (i = 0; i < count; i++) {
+    if (t[i].type == TOKEN_ERROR)
+      return report(t[i].line, "Unknown identifier, invalid character, or integer out of range.");
   }
-  parser.current++; // go to next token
-  return t;
-}
-
-Token expect(TokenType type, char *error_message) {
-  Token t = consume();
-  if (t.type != type) {
-    printf("Error on line %d: %s\n", t.line, error_message);
-    exit(1);
-  }
-  return t;
-}
-
-void init_parser() {
-  parser.current = tokens;
-  parser.next_byte = 0;
-}
-
-void compile_byte(u8 x) {
-  final_binary[parser.next_byte] = x;
-  parser.next_byte += 1;
-}
-
-void parse_move() {
-  Token regis = expect(TOKEN_REGISTER, "You can only move into a register");
-  expect(TOKEN_COMMA, "Expected comma");
-  Token rhs = consume();
-
-  // compile loading constant into register 1
-  if (rhs.type == TOKEN_INTEGER) {
-    if (regis.value != 1) {
-      printf("Error on line %d: Can only move constant into register 1.\n", regis.line);
-      exit(1);
+  if (t[0].type == TOKEN_MOV) {
+    if (count != 4 || t[1].type != TOKEN_REGISTER ||
+        t[2].type != TOKEN_COMMA ||
+        (t[3].type != TOKEN_INTEGER && t[3].type != TOKEN_REGISTER))
+      return report(t[0].line, "Expected mov REGISTER, REGISTER or mov reg1, CONSTANT.");
+    if (t[3].type == TOKEN_INTEGER) {
+      if (t[1].value != 1)
+        return report(t[0].line, "Can only move a constant into register 1.");
+      if (t[3].value > 63)
+        return report(t[0].line, "Constant must be between 0 and 63.");
+      value = t[3].value;
+    } else {
+      value = 0x80 | (t[3].value << 3) | t[1].value;
     }
-
-    if (rhs.value > 63) {
-      printf("Error on line %d: Can't move numbers bigger than 63 into register 1.\n", rhs.line);
-      exit(1);
+  } else {
+    switch (t[0].type) {
+      case TOKEN_OR: opcode = 0; break;
+      case TOKEN_ADD: opcode = 1; break;
+      case TOKEN_SUB: opcode = 2; break;
+      case TOKEN_NAND: opcode = 3; break;
+      case TOKEN_AND: opcode = 4; break;
+      case TOKEN_XOR: opcode = 6; break;
+      case TOKEN_EQ: opcode = 7; break;
+      default: return report(t[0].line, "Expected an instruction.");
     }
-
-    compile_byte(rhs.value);
-    return;
+    if (count != 6 || t[1].type != TOKEN_REGISTER ||
+        t[2].type != TOKEN_COMMA || t[3].type != TOKEN_REGISTER ||
+        t[4].type != TOKEN_COMMA || t[5].type != TOKEN_REGISTER)
+      return report(t[0].line, "Expected instruction REGISTER, reg1, reg2.");
+    if (t[3].value != 1 || t[5].value != 2)
+      return report(t[0].line, "Source operands must be reg1 followed by reg2.");
+    value = 0x40 | (t[1].value << 3) | opcode;
   }
-
-  // compile loading register into another register
-  if (rhs.type == TOKEN_REGISTER) {
-    int register_a = rhs.value << 3;
-    int register_b = regis.value;
-    int opcode = 0b10000000;
-    compile_byte(opcode | register_a | register_b);
-    return;
-  }
-
-  // invalid case
-  printf("Error on line %d: Expected either a register or a constant for move operation.\n", rhs.line);
-  exit(1);
+  if (byte_count == (int)sizeof(final_binary))
+    return report(t[0].line, "Program exceeds the 255-byte output capacity.");
+  final_binary[byte_count++] = (u8)value;
+  return 1;
 }
 
-void parse_line() {
-  Token t = consume();
-
-  if (t.type == TOKEN_MOV) {
-    parse_move();
-    return;
+int parse_lines(void) {
+  const Token *current = tokens;
+  byte_count = 0;
+  error_count = 0;
+  while (current->type != TOKEN_EOF) {
+    const Token *start = current;
+    int line = current->line;
+    while (current->type != TOKEN_EOF && current->line == line) current++;
+    compile_line(start, (int)(current - start));
   }
-
-  printf("Error on line %d: Unexpected token.\n", t.line);
-  exit(1);
+  return error_count;
 }
 
-void parse_lines() {
-  init_parser();
-
-  while (peek().type != TOKEN_EOF) {
-    parse_line();
+void print_binary(void) {
+  int i, bit;
+  if (error_count) return;
+  for (i = 0; i < byte_count; i++) {
+    for (bit = 7; bit >= 0; bit--)
+      putchar((final_binary[i] & (1 << bit)) ? '1' : '0');
+    putchar('\n');
   }
 }
-
-void print_binary() {
-  for (int i=0; i<parser.next_byte; i++) {
-    for (int j=7; j>=0; j--) {
-      if (final_binary[i] & (1 << j)) {
-        printf("1");
-      } else {
-        printf("0");
-      }
-    }
-    printf("\n");
-  }
-}
-
